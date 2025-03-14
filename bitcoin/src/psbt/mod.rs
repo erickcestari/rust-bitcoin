@@ -427,6 +427,15 @@ impl Psbt {
                 k.get_key(&KeyRequest::Bip32(key_source.clone()), secp)
             {
                 secret_key
+            } else if let Ok(Some(sk)) = k.get_key(
+                &KeyRequest::Pubkey(xonly.public_key(secp256k1::Parity::Even).into()),
+                secp,
+            ) {
+                sk
+            } else if let Ok(Some(sk)) = k
+                .get_key(&KeyRequest::Pubkey(xonly.public_key(secp256k1::Parity::Odd).into()), secp)
+            {
+                sk
             } else {
                 continue;
             };
@@ -2269,6 +2278,48 @@ mod tests {
             Error::NegativeFee => {}
             e => panic!("unexpected error: {:?}", e),
         }
+    }
+
+    #[test]
+    #[cfg(feature = "rand-std")]
+    fn hashmap_can_sign_taproot() {
+        use crate::address::script_pubkey::ScriptBufExt as _;
+        use crate::bip32::{DerivationPath, Fingerprint};
+        use crate::locktime;
+
+        let (priv_key, pk, secp) = gen_keys();
+
+        let internal_key: XOnlyPublicKey = pk.inner.into();
+
+        let tx = Transaction {
+            version: transaction::Version::TWO,
+            lock_time: locktime::absolute::LockTime::ZERO,
+            input: vec![TxIn::EMPTY_COINBASE],
+            output: vec![TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::new() }],
+        };
+
+        let mut psbt = Psbt::from_unsigned_tx(tx).unwrap();
+
+        psbt.inputs[0].tap_internal_key = Some(internal_key);
+
+        psbt.inputs[0].witness_utxo = Some(transaction::TxOut {
+            value: Amount::from_sat_unchecked(10),
+            script_pubkey: ScriptBuf::new_p2tr(&secp, internal_key, None),
+        });
+
+        let mut key_map = HashMap::new();
+        key_map.insert(pk, priv_key);
+
+        let key_source = (Fingerprint::default(), DerivationPath::default());
+
+        let mut tap_key_origins = std::collections::BTreeMap::new();
+        tap_key_origins.insert(internal_key, (vec![], key_source));
+        psbt.inputs[0].tap_key_origins = tap_key_origins;
+
+        let signing_keys = psbt.sign(&key_map, &secp).unwrap();
+
+        assert_eq!(signing_keys.len(), 1);
+        assert_eq!(signing_keys[&0], SigningKeys::Schnorr(vec![internal_key]));
     }
 
     #[test]
