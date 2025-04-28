@@ -25,10 +25,171 @@ use crate::script::{self, ScriptBuf};
 use crate::taproot::{TapNodeHash, TapTweakHash};
 
 #[rustfmt::skip]                // Keep public re-exports separate.
-pub use secp256k1::{constants, Keypair, Parity, Secp256k1, Verification, XOnlyPublicKey};
+pub use secp256k1::{constants, Keypair, Parity, Secp256k1, Verification};
 #[cfg(feature = "rand-std")]
 pub use secp256k1::rand;
 pub use serialized_x_only::SerializedXOnlyPublicKey;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Error returned when parsing a [`XOnlyPublicKey`].
+pub enum ParseXOnlyPublicKeyError {
+    /// Secp256k1 error.
+    Secp256k1(secp256k1::Error),
+}
+
+impl From<Infallible> for ParseXOnlyPublicKeyError {
+    fn from(never: Infallible) -> Self { match never {} }
+}
+
+impl fmt::Display for ParseXOnlyPublicKeyError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use ParseXOnlyPublicKeyError::*;
+        match self {
+            Secp256k1(e) => write_err!(f, "secp256k1 error"; e),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for ParseXOnlyPublicKeyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        use ParseXOnlyPublicKeyError::*;
+
+        match self {
+            Secp256k1(e) => Some(e),
+        }
+    }
+}
+
+impl From<secp256k1::Error> for ParseXOnlyPublicKeyError {
+    fn from(e: secp256k1::Error) -> Self { Self::Secp256k1(e) }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Error returned when validating a [`XOnlyPublicKey`].
+pub enum InvalidXOnlyPublicKeyError {
+    /// Secp256k1 error.
+    Secp256k1(secp256k1::Error),
+}
+
+impl From<Infallible> for InvalidXOnlyPublicKeyError {
+    fn from(never: Infallible) -> Self { match never {} }
+}
+
+impl fmt::Display for InvalidXOnlyPublicKeyError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use InvalidXOnlyPublicKeyError::*;
+        match self {
+            Secp256k1(e) => write_err!(f, "secp256k1 error"; e),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for InvalidXOnlyPublicKeyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        use InvalidXOnlyPublicKeyError::*;
+
+        match self {
+            Secp256k1(e) => Some(e),
+        }
+    }
+}
+
+impl From<secp256k1::Error> for InvalidXOnlyPublicKeyError {
+    fn from(e: secp256k1::Error) -> Self { Self::Secp256k1(e) }
+}
+
+/// A Bitcoin Schnorr X-only public key used for BIP340 signatures.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct XOnlyPublicKey(secp256k1::XOnlyPublicKey);
+
+impl XOnlyPublicKey {
+    /// Constructs a new x-only public key from the provided generic Secp256k1 x-only public key.
+    pub fn new(key: impl Into<secp256k1::XOnlyPublicKey>) -> XOnlyPublicKey {
+        XOnlyPublicKey(key.into())
+    }
+
+    /// Creates an x-only public key from a keypair.
+    ///
+    /// Returns the x-only public key and the parity of the full public key.
+    #[inline]
+    pub fn from_keypair(keypair: &Keypair) -> (XOnlyPublicKey, Parity) {
+        let (xonly, parity) = secp256k1::XOnlyPublicKey::from_keypair(keypair);
+        (XOnlyPublicKey::new(xonly), parity)
+    }
+
+    /// Creates an x-only public key from a 32-byte x-coordinate.
+    ///
+    /// Returns an error if the provided bytes don't represent a valid secp256k1 point x-coordinate.
+    #[inline]
+    pub fn from_byte_array(
+        data: &[u8; constants::SCHNORR_PUBLIC_KEY_SIZE],
+    ) -> Result<XOnlyPublicKey, InvalidXOnlyPublicKeyError> {
+        secp256k1::XOnlyPublicKey::from_byte_array(data)
+            .map(XOnlyPublicKey::new)
+            .map_err(Into::into)
+    }
+
+    /// Serializes the x-only public key as a byte-encoded x coordinate value (32 bytes).
+    #[inline]
+    pub fn serialize(&self) -> [u8; constants::SCHNORR_PUBLIC_KEY_SIZE] { self.0.serialize() }
+
+    /// Converts this x-only public key to a full public key given the parity.
+    #[inline]
+    pub fn public_key(&self, parity: Parity) -> PublicKey { self.0.public_key(parity).into() }
+
+    /// Verifies that a tweak produced by [`XOnlyPublicKey::add_tweak`] was computed correctly.
+    ///
+    /// Should be called on the original untweaked key. Takes the tweaked key and output parity from
+    /// [`XOnlyPublicKey::add_tweak`] as input.
+    #[inline]
+    pub fn tweak_add_check<V: Verification>(
+        &self,
+        secp: &Secp256k1<V>,
+        tweaked_key: &Self,
+        tweaked_parity: Parity,
+        tweak: secp256k1::Scalar,
+    ) -> bool {
+        self.0.tweak_add_check(secp, &tweaked_key.0, tweaked_parity, tweak)
+    }
+
+    /// Tweaks an [`XOnlyPublicKey`] by adding the generator multiplied with the given tweak to it.
+    ///
+    /// # Returns
+    ///
+    /// The newly tweaked key plus an opaque type representing the parity of the tweaked key, this
+    /// should be provided to `tweak_add_check` which can be used to verify a tweak more efficiently
+    /// than regenerating it and checking equality.
+    ///
+    /// # Errors
+    ///
+    /// If the resulting key would be invalid.
+    #[inline]
+    pub fn add_tweak<V: Verification>(
+        &self,
+        secp: &Secp256k1<V>,
+        tweak: &secp256k1::Scalar,
+    ) -> Result<(XOnlyPublicKey, Parity), InvalidXOnlyPublicKeyError> {
+        self.0.add_tweak(secp, tweak).map(|(xonly, parity)| (XOnlyPublicKey(xonly), parity)).map_err(Into::into)
+    }
+}
+
+impl FromStr for XOnlyPublicKey {
+    type Err = ParseXOnlyPublicKeyError;
+    fn from_str(s: &str) -> Result<XOnlyPublicKey, ParseXOnlyPublicKeyError> {
+        secp256k1::XOnlyPublicKey::from_str(s).map(XOnlyPublicKey::from).map_err(Into::into)
+    }
+}
+
+impl From<secp256k1::XOnlyPublicKey> for XOnlyPublicKey {
+    fn from(pk: secp256k1::XOnlyPublicKey) -> XOnlyPublicKey { XOnlyPublicKey::new(pk) }
+}
+
+impl From<secp256k1::PublicKey> for XOnlyPublicKey {
+    fn from(pk: secp256k1::PublicKey) -> XOnlyPublicKey { XOnlyPublicKey::new(pk) }
+}
 
 /// A Bitcoin ECDSA public key.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -222,7 +383,7 @@ impl From<secp256k1::PublicKey> for PublicKey {
 }
 
 impl From<PublicKey> for XOnlyPublicKey {
-    fn from(pk: PublicKey) -> XOnlyPublicKey { pk.inner.into() }
+    fn from(pk: PublicKey) -> XOnlyPublicKey { XOnlyPublicKey::new(pk.inner) }
 }
 
 /// An opaque return type for PublicKey::to_sort_key.
@@ -743,13 +904,13 @@ pub type UntweakedPublicKey = XOnlyPublicKey;
 pub struct TweakedPublicKey(XOnlyPublicKey);
 
 impl fmt::LowerHex for TweakedPublicKey {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::LowerHex::fmt(&self.0, f) }
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::LowerHex::fmt(&self.0 .0, f) }
 }
 // Allocate for serialized size
 impl_to_hex_from_lower_hex!(TweakedPublicKey, |_| constants::SCHNORR_PUBLIC_KEY_SIZE * 2);
 
 impl fmt::Display for TweakedPublicKey {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::Display::fmt(&self.0, f) }
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result { fmt::Display::fmt(&self.0 .0, f) }
 }
 
 /// Untweaked BIP-340 key pair.
@@ -874,7 +1035,7 @@ impl TweakedPublicKey {
     #[inline]
     pub fn from_keypair(keypair: TweakedKeypair) -> Self {
         let (xonly, _parity) = keypair.0.x_only_public_key();
-        TweakedPublicKey(xonly)
+        TweakedPublicKey(xonly.into())
     }
 
     /// Constructs a new [`TweakedPublicKey`] from a [`XOnlyPublicKey`]. No tweak is applied, consider
@@ -894,7 +1055,7 @@ impl TweakedPublicKey {
     /// the y-coordinate is represented by only a single bit, as x determines
     /// it up to one bit.
     #[inline]
-    pub fn serialize(&self) -> [u8; constants::SCHNORR_PUBLIC_KEY_SIZE] { self.0.serialize() }
+    pub fn serialize(&self) -> [u8; constants::SCHNORR_PUBLIC_KEY_SIZE] { self.0 .0.serialize() }
 }
 
 impl TweakedKeypair {
@@ -914,7 +1075,7 @@ impl TweakedKeypair {
     #[inline]
     pub fn public_parts(&self) -> (TweakedPublicKey, Parity) {
         let (xonly, parity) = self.0.x_only_public_key();
-        (TweakedPublicKey(xonly), parity)
+        (TweakedPublicKey(xonly.into()), parity)
     }
 }
 
@@ -1246,7 +1407,7 @@ mod serialized_x_only {
 
 impl SerializedXOnlyPublicKey {
     /// Returns `XOnlyPublicKey` if the bytes are valid.
-    pub fn to_validated(self) -> Result<XOnlyPublicKey, secp256k1::Error> {
+    pub fn to_validated(self) -> Result<XOnlyPublicKey, InvalidXOnlyPublicKeyError> {
         XOnlyPublicKey::from_byte_array(self.as_byte_array())
     }
 }
