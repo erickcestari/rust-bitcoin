@@ -6,7 +6,7 @@ use crate::psbt::map::Map;
 use crate::psbt::{raw, Error};
 use crate::script::ScriptBuf;
 use crate::taproot::{TapLeafHash, TapTree};
-use crate::XOnlyPublicKey;
+use crate::crypto::key::XOnlyPublicKey;
 
 /// Type: Redeem ScriptBuf PSBT_OUT_REDEEM_SCRIPT = 0x00
 const PSBT_OUT_REDEEM_SCRIPT: u64 = 0x00;

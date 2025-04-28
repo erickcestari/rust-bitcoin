@@ -1882,7 +1882,7 @@ mod tests {
 
         use crate::consensus::serde as con_serde;
         use crate::taproot::{TapNodeHash, TapTweakHash};
-        use crate::XOnlyPublicKey;
+        use crate::crypto::key::XOnlyPublicKey;
 
         #[derive(serde::Deserialize)]
         struct UtxoSpent {
